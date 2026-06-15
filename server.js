@@ -39,7 +39,20 @@ const SOL_RPCS = (process.env.SOL_RPC ? [process.env.SOL_RPC] : []).concat([
   'https://solana-rpc.publicnode.com',
   'https://rpc.ankr.com/solana'
 ]);
-let poolCache = { sol:null, ts:0, ok:false };
+let poolCache = { sol:null, usd:null, ts:0, ok:false };
+async function fetchSolPriceUsd(){
+  const urls = ['https://api.coinbase.com/v2/prices/SOL-USD/spot','https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT'];
+  for(const url of urls){
+    try{
+      const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(),6000);
+      const r=await fetch(url,{signal:ctrl.signal}); clearTimeout(to);
+      if(!r.ok) continue; const j=await r.json();
+      const p = (j&&j.data&&parseFloat(j.data.amount)) || (j&&parseFloat(j.price));
+      if(isFinite(p)&&p>0) return p;
+    }catch(e){}
+  }
+  return null;
+}
 async function fetchPoolSol(){
   const body = JSON.stringify({ jsonrpc:'2.0', id:1, method:'getBalance', params:[PRIZE_WALLET] });
   for(const url of SOL_RPCS){
@@ -57,17 +70,36 @@ async function fetchPoolSol(){
 async function getPool(){
   const now = Date.now();
   if(poolCache.ok && now - poolCache.ts < 30000) return poolCache;   // cache 30s
-  const sol = await fetchPoolSol();
-  if(sol != null){ poolCache = { sol, ts:now, ok:true }; }
-  else { poolCache = { sol: poolCache.sol, ts:now, ok:false }; }      // keep last good value
+  const [sol, usd] = await Promise.all([fetchPoolSol(), fetchSolPriceUsd()]);
+  poolCache = {
+    sol: (sol!=null? sol : poolCache.sol),
+    usd: (usd!=null? usd : poolCache.usd),
+    ts: now,
+    ok: (sol!=null)
+  };
   return poolCache;
 }
 // warm it on boot + refresh in the background
 getPool(); setInterval(getPool, 30000);
 
 // ---------- persistent leaderboard (accounts keyed by lowercase name) ----------
-let board = {};   // name -> { name, wins, gold, xp, height, daily, weekly, ts }
+// ONE-TIME RESET: bump this string to wipe ALL stored accounts on the next deploy.
+// (Leave it alone afterwards — accounts persist normally going forward.)
+const RESET_TOKEN = 'reset-2026-06-15';
+const RESET_FLAG  = (process.env.LB_FILE || path.join(__dirname,'leaderboard.json')) + '.reset';
+let board = {};   // name -> { name, wins, gold, xp, height, ... }
 try { board = JSON.parse(fs.readFileSync(LB_FILE, 'utf8')) || {}; } catch (e) { board = {}; }
+// if we haven't applied this reset token yet, clear the board exactly once.
+try {
+  let done = '';
+  try { done = fs.readFileSync(RESET_FLAG, 'utf8'); } catch(e){}
+  if (done !== RESET_TOKEN) {
+    board = {};
+    try { fs.writeFileSync(LB_FILE, '{}'); } catch(e){}
+    try { fs.writeFileSync(RESET_FLAG, RESET_TOKEN); } catch(e){}
+    console.log('Leaderboard wiped (one-time reset '+RESET_TOKEN+').');
+  }
+} catch(e){}
 let saveTimer = null;
 function saveSoon(){ if(saveTimer) return; saveTimer = setTimeout(()=>{ saveTimer=null;
   try { fs.writeFileSync(LB_FILE, JSON.stringify(board)); } catch(e){} }, 1500); }
@@ -144,7 +176,7 @@ const server = http.createServer((req,res)=>{
   if(req.method==='GET' && u.pathname==='/pool'){
     getPool().then(p=>{
       res.writeHead(200, {'Content-Type':'application/json'});
-      res.end(JSON.stringify({ sol: p.sol, ok: p.ok, wallet: PRIZE_WALLET }));
+      res.end(JSON.stringify({ sol: p.sol, usd: p.usd, ok: p.ok, wallet: PRIZE_WALLET }));
     }).catch(()=>{ res.writeHead(200,{'Content-Type':'application/json'}); res.end(JSON.stringify({sol:null,ok:false,wallet:PRIZE_WALLET})); });
     return;
   }
@@ -177,21 +209,31 @@ const server = http.createServer((req,res)=>{
 const wss = new WebSocketServer({ server });
 const rooms = new Map();   // code -> { members:Map(id->{ws,name,fit,ready}), host, public, phase, countdown, timer }
 let nextId = 1;
-const MIN_START = 4;       // need at least this many REAL players to begin the countdown
-const COUNTDOWN = 60;      // seconds, once MIN_START reached
+const MIN_START = 3;       // need at least this many REAL players to compete
+const COUNTDOWN = 90;      // seconds lobby waits once MIN_START reached
 const AUTOSTART = 20;      // instantly begin at a full lobby
+const VOTE_PCT  = 0.65;    // if > this fraction of players vote, start immediately
 
-function roomOf(code){ if(!rooms.has(code)) rooms.set(code,{ members:new Map(), host:null, public:code.startsWith('PUBLIC'), phase:'queue', countdown:0, timer:null }); return rooms.get(code); }
+function roomOf(code){ if(!rooms.has(code)) rooms.set(code,{ members:new Map(), host:null, public:code.startsWith('PUBLIC'), phase:'queue', countdown:0, timer:null, votes:new Set() }); return rooms.get(code); }
 function publicRoom(){ // any public room still gathering (queue OR counting) with space
   for(const [code,r] of rooms) if(r.public && (r.phase==='queue'||r.phase==='counting') && r.members.size>0 && r.members.size<AUTOSTART) return code;
   return 'PUBLIC-'+Date.now().toString(36);
 }
 function bcast(r,msg,exceptId){ const s=JSON.stringify(msg); for(const [pid,m] of r.members) if(pid!==exceptId && m.ws.readyState===1) m.ws.send(s); }
 
+function votesNeeded(n){ return Math.max(1, Math.ceil(n*VOTE_PCT)); }
 function pushQueue(r){
   const n = r.members.size;
+  // only count votes from players still present
+  for(const v of [...r.votes]) if(!r.members.has(v)) r.votes.delete(v);
   bcast(r, { t:'queue', n, min:MIN_START, max:AUTOSTART, phase:r.phase,
-             countdown: r.phase==='counting' ? Math.ceil(r.countdown) : null });
+             countdown: r.phase==='counting' ? Math.ceil(r.countdown) : null,
+             votes: r.votes.size, votesNeeded: votesNeeded(n) });
+}
+function checkVotes(r){
+  if(r.phase!=='counting' && r.phase!=='queue') return;
+  const n=r.members.size;
+  if(n>=MIN_START && r.votes.size > n*VOTE_PCT){ return beginMatch(r); }
 }
 function startCountdown(r){
   if(r.phase!=='queue') return;
@@ -203,7 +245,7 @@ function cancelCountdown(r){
 }
 function beginMatch(r){
   if(r.phase==='playing') return;
-  r.phase='playing'; if(r.timer){ clearInterval(r.timer); r.timer=null; }
+  r.phase='playing'; if(r.timer){ clearInterval(r.timer); r.timer=null; } r.votes.clear();
   // lock the roster order; first member is the authority for map picks
   bcast(r, { t:'begin', n:r.members.size });
 }
@@ -250,6 +292,9 @@ wss.on('connection',(ws)=>{
     const r = rooms.get(code); if(!r) return;
     // a private-room host can force the start early
     if(m.t==='forcestart' && r.host===id){ return beginMatch(r); }
+    // vote-to-start (public lobbies): >65% of players → begin now
+    if(m.t==='vote'){ r.votes.add(id); pushQueue(r); checkVotes(r); return; }
+    if(m.t==='unvote'){ r.votes.delete(id); pushQueue(r); return; }
     if(m.t==='state'||m.t==='finish'||m.t==='dead'){ m.from=id; bcast(r,m,id); return; }
     if((m.t==='round'||m.t==='start') && r.host===id){ bcast(r,m,id); return; }
   });
