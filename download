@@ -1,0 +1,99 @@
+# TRENCH BEANZ — Server
+
+This little folder is the **server** for your game. It does two jobs:
+
+1. Connects real players together in live multiplayer matches.
+2. Stores the real global leaderboard (so scores are shared between everyone).
+
+Your game file (`trench-beanz.html`) goes on **Netlify**.
+This server folder goes on **Render**.
+They are two separate hosts on purpose — Netlify can't run a server, Render can.
+
+Everything here is free.
+
+---
+
+## What's in this folder
+
+| File | What it is |
+|------|------------|
+| `server.js` | The actual server program. |
+| `package.json` | Tells the host what to install and how to start. |
+| `render.yaml` | Optional one-click setup for Render. |
+| `.gitignore` | Housekeeping (ignore junk files). |
+| `README.md` | This guide. |
+
+You don't need to edit any of these. Just upload the folder.
+
+---
+
+## Deploy it on Render (about 5 minutes)
+
+### Step 1 — Put this folder on GitHub
+1. Make a free account at **github.com**.
+2. Click **New repository**, name it `trench-beanz-server`, click **Create**.
+3. On the new repo page click **uploading an existing file**.
+4. Drag in **all the files from this folder** (`server.js`, `package.json`, `render.yaml`, `.gitignore`, `README.md`).
+   - Do **not** upload a `node_modules` folder if you have one — it installs automatically.
+5. Click **Commit changes**.
+
+### Step 2 — Connect it to Render
+1. Make a free account at **render.com** (you can sign in with GitHub — easiest).
+2. Click **New** → **Web Service**.
+3. Pick your `trench-beanz-server` repo.
+4. Render usually fills these in automatically. If not, set:
+   - **Build Command:** `npm install`
+   - **Start Command:** `npm start`
+   - **Instance Type:** Free
+5. Click **Create Web Service** and wait ~1–2 minutes for it to build.
+
+### Step 3 — Copy your server address
+When it's live, Render shows a URL at the top like:
+
+```
+https://trench-beanz-server.onrender.com
+```
+
+Copy it, then **change `https` to `wss`**:
+
+```
+wss://trench-beanz-server.onrender.com
+```
+
+That `wss://...` line is the only thing you need from here.
+
+---
+
+## Connect the game to your server
+
+1. Open **`trench-beanz.html`** in a text editor.
+2. Near the top of the multiplayer section there's a line:
+   ```js
+   const NET_URL='';
+   ```
+3. Paste your address between the quotes:
+   ```js
+   const NET_URL='wss://trench-beanz-server.onrender.com';
+   ```
+4. Save the file and re-upload it to Netlify.
+
+Done. Online matches now use real players, and the leaderboard is shared worldwide.
+
+---
+
+## Good to know
+
+- **It sleeps.** On Render's free plan the server "sleeps" after ~15 minutes with no players. The first person to join after that waits ~30 seconds while it wakes up. Normal for free hosting. If you want it always instant, upgrade to Render's paid plan (~$7/month) or use Railway/Fly.io.
+- **Scores are saved.** The `render.yaml` sets up a small disk so the leaderboard survives restarts. If you skip the Blueprint, scores still work but reset whenever the server redeploys.
+- **Test it's alive.** Visit your `https://...onrender.com/health` link in a browser — it should say `TRENCH BEANZ server up`.
+- **Nothing to set up for offline play.** "Offline — vs AI" in the game never touches this server.
+
+---
+
+## Quick checklist
+
+- [ ] Files uploaded to a GitHub repo
+- [ ] Render Web Service created (Build `npm install`, Start `npm start`)
+- [ ] Copied the `wss://...` address
+- [ ] Pasted it into `NET_URL` in `trench-beanz.html`
+- [ ] Re-uploaded `trench-beanz.html` to Netlify
