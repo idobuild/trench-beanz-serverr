@@ -177,7 +177,7 @@ const server = http.createServer((req,res)=>{
 const wss = new WebSocketServer({ server });
 const rooms = new Map();   // code -> { members:Map(id->{ws,name,fit,ready}), host, public, phase, countdown, timer }
 let nextId = 1;
-const MIN_START = 5;       // need at least this many REAL players to begin the countdown
+const MIN_START = 4;       // need at least this many REAL players to begin the countdown
 const COUNTDOWN = 60;      // seconds, once MIN_START reached
 const AUTOSTART = 20;      // instantly begin at a full lobby
 
