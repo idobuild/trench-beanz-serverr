@@ -22,7 +22,14 @@ const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 8787;
 const MAX_ROOM = 20, MAX_MSG = 4096;
-const LB_FILE = process.env.LB_FILE || path.join(__dirname, 'leaderboard.json');
+// Where the leaderboard is saved. Prefer the persistent disk (/var/data) so the data
+// SURVIVES code redeploys. Falls back to a local file only if no disk is mounted.
+function defaultLbPath(){
+  try { if (fs.existsSync('/var/data')) return '/var/data/leaderboard.json'; } catch(e){}
+  return path.join(__dirname, 'leaderboard.json');
+}
+const LB_FILE = process.env.LB_FILE || defaultLbPath();
+console.log('Leaderboard storage:', LB_FILE);
 const STATS = ['wins','gold','xp','height','daily','weekly'];
 // REWARD CONTEST: four 24h categories. Top 10 of each share that category's slice
 // of the prize pool. 1st = 25%, tapering down. Must sum to 100.
@@ -85,8 +92,8 @@ getPool(); setInterval(getPool, 30000);
 // ---------- persistent leaderboard (accounts keyed by lowercase name) ----------
 // ONE-TIME RESET: bump this string to wipe ALL stored accounts on the next deploy.
 // (Leave it alone afterwards — accounts persist normally going forward.)
-const RESET_TOKEN = 'reset-2026-06-15';
-const RESET_FLAG  = (process.env.LB_FILE || path.join(__dirname,'leaderboard.json')) + '.reset';
+const RESET_TOKEN = 'reset-2026-06-15b';   // bump this string ONLY when you want a one-time wipe
+const RESET_FLAG  = LB_FILE + '.reset';
 let board = {};   // name -> { name, wins, gold, xp, height, ... }
 try { board = JSON.parse(fs.readFileSync(LB_FILE, 'utf8')) || {}; } catch (e) { board = {}; }
 // if we haven't applied this reset token yet, clear the board exactly once.
